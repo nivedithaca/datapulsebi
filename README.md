@@ -3,7 +3,7 @@
 An AI-powered ad-hoc analytics bot built with Streamlit + Groq (LLaMA 3.1).
 
 ## 🚀 Live App
-👉 [Open DataPulse](https://nivedithaca-datapulsebi-app.streamlit.app)
+👉 [Open DataPulse](https://datapulsebi-aq2a586vp3h5nxc72fd8ll.streamlit.app/)
 
 ## Features
 - **Data Pull** — Ask business questions in plain English, get SQL results instantly
