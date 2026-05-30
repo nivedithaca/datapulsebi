@@ -5,11 +5,10 @@ import plotly.express as px
 import plotly.graph_objects as go
 import pandas as pd
 from groq import Groq
-from dotenv import load_dotenv
 from data_loader import get_schema, run_query
+from utils.config import get_groq_api_key
 
-load_dotenv()
-client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+client = Groq(api_key=get_groq_api_key())
 
 
 def clean_sql(text):

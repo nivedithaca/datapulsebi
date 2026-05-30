@@ -3,12 +3,11 @@ import re
 import sqlparse
 import pandas as pd
 from groq import Groq
-from dotenv import load_dotenv
 from data_loader import get_schema, run_query
 from utils.chart_generator import smart_chart
+from utils.config import get_groq_api_key
 
-load_dotenv()
-client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+client = Groq(api_key=get_groq_api_key())
 
 # SAFE USPS codes — NOT common English words, match any case anywhere
 SAFE_USPS = {
@@ -184,9 +183,35 @@ Rules:
 - Always use lowercase column names
 - Return only the SQL query, nothing else
 - No markdown, no explanation, no backticks
-- Do NOT add any LIMIT unless the user explicitly asks for a specific number of records
 - ALWAYS include the GROUP BY column in the SELECT statement when aggregating
 - Example: SELECT segment, SUM(sales) FROM superstore GROUP BY segment
+
+LIMIT RULES — CRITICAL:
+- NEVER use LIMIT under any circumstances — not for "top N", not for "bottom N", not ever
+- ALWAYS use ROW_NUMBER() window function to rank and filter results
+- "top N" (no grouping) → ROW_NUMBER() OVER (ORDER BY metric DESC) AS rn, then WHERE rn <= N
+- "bottom N" (no grouping) → ROW_NUMBER() OVER (ORDER BY metric ASC) AS rn, then WHERE rn <= N
+- "top N by [dimension]" → ROW_NUMBER() OVER (PARTITION BY dimension ORDER BY metric DESC) AS rn, then WHERE rn <= N
+- If the user does NOT mention any number → return all rows, no filtering on rn
+- Examples:
+  - "top 10 customers by sales" →
+    WITH ranked AS (
+      SELECT customer_id, customer_name, segment, region, state, city,
+             SUM(sales) AS total_sales,
+             ROW_NUMBER() OVER (ORDER BY SUM(sales) DESC) AS rn
+      FROM superstore GROUP BY customer_id, customer_name, segment, region, state, city
+    )
+    SELECT customer_id, customer_name, segment, region, state, city, total_sales
+    FROM ranked WHERE rn <= 10
+  - "top 5 customers by segment" →
+    WITH ranked AS (
+      SELECT customer_id, customer_name, segment, region, state, city,
+             SUM(sales) AS total_sales,
+             ROW_NUMBER() OVER (PARTITION BY segment ORDER BY SUM(sales) DESC) AS rn
+      FROM superstore GROUP BY customer_id, customer_name, segment, region, state, city
+    )
+    SELECT customer_id, customer_name, segment, region, state, city, total_sales
+    FROM ranked WHERE rn <= 5 ORDER BY segment, total_sales DESC
 
 METRIC INTERPRETATION — follow these exactly:
 - "total sales (SUM of sales)" → SELECT SUM(sales)
@@ -199,13 +224,20 @@ METRIC INTERPRETATION — follow these exactly:
 
 CUSTOMER QUERIES:
 - When the question is about customers, ALWAYS include these columns in SELECT: customer_id, customer_name, segment, region, state, city
-- Example (overall top customers): SELECT customer_id, customer_name, segment, region, state, city, SUM(profit) AS total_profit FROM superstore GROUP BY customer_id, customer_name, segment, region, state, city ORDER BY total_profit DESC
+- Example (top 10 overall by sales — NO LIMIT, use ROW_NUMBER):
+  WITH ranked AS (
+    SELECT customer_id, customer_name, segment, region, state, city,
+           SUM(sales) AS total_sales,
+           ROW_NUMBER() OVER (ORDER BY SUM(sales) DESC) AS rn
+    FROM superstore GROUP BY customer_id, customer_name, segment, region, state, city
+  )
+  SELECT customer_id, customer_name, segment, region, state, city, total_sales FROM ranked WHERE rn <= 10
 - Never return just customer_id alone — always show the full customer profile
 
 TOP N BY GROUP — CRITICAL RULE:
-- Whenever the user says "by segment", "by category", "by region", "by state", or any grouping dimension alongside "top/bottom N", they want the top N WITHIN EACH GROUP — NOT an overall top N with LIMIT.
-- NEVER use a plain LIMIT when the user says "by [dimension]". Use a window function instead.
+- Whenever the user says "by segment", "by category", "by region", "by state", or any grouping dimension alongside "top/bottom N", they want the top N WITHIN EACH GROUP.
 - ALWAYS use ROW_NUMBER() OVER (PARTITION BY <group_col> ORDER BY <metric> DESC) for these queries.
+- NEVER use LIMIT anywhere — not even at the end of a window function query.
 - Example — "top 5 customers by segment by profit":
   WITH ranked AS (
     SELECT customer_id, customer_name, segment, region, state, city,
@@ -217,7 +249,6 @@ TOP N BY GROUP — CRITICAL RULE:
   SELECT customer_id, customer_name, segment, region, state, city, total_profit
   FROM ranked WHERE rn <= 5 ORDER BY segment, total_profit DESC
 - Use rn <= N where N is the number requested (default 1 if the user doesn't specify a number).
-- Do NOT add a LIMIT clause on top of the window function result.
 
 PRODUCT QUERIES:
 - When the question is about products, ALWAYS include: product_name, category, sub_category alongside the metric
@@ -230,6 +261,24 @@ DATE FUNCTIONS — SQLite only, never use PostgreSQL/MySQL syntax:
   - Day   → strftime('%Y-%m-%d', order_date)
   - Quarter → CASE WHEN strftime('%m', order_date) IN ('01','02','03') THEN 'Q1' ... END
 - Example: SELECT strftime('%Y', order_date) AS year, SUM(sales) FROM superstore GROUP BY year
+
+DISCOUNT COLUMN — CRITICAL:
+- The discount column is stored as a DECIMAL between 0.0 and 1.0, NOT as a percentage
+- "20% discount" or "discount > 20%" → WHERE discount > 0.20
+- "30% discount" or "discount >= 30%" → WHERE discount >= 0.30
+- "less than 10% discount" → WHERE discount < 0.10
+- NEVER write discount > 20 or discount > 30 — those values don't exist in the data and return 0 rows
+- Always divide the user's percentage by 100 before using it in the query
+
+RAW RECORD QUERIES — CRITICAL:
+- When the user says "show me orders", "list orders", "find orders", "give me orders", "orders where", "orders with", "orders greater than", "orders above", "orders below" — they want INDIVIDUAL ROWS, not aggregates
+- Use SELECT with these columns: order_id, order_date, customer_name, region, segment, category, sub_category, product_name, sales, profit, discount, quantity
+- Do NOT use SUM(), AVG(), COUNT() or GROUP BY for raw listing queries
+- NEVER aggregate when the user is asking to see/list/show orders — just filter and return rows
+- Example: "show me orders with discount greater than 20% for central region" →
+  SELECT order_id, order_date, customer_name, region, segment, category, product_name, sales, profit, discount, quantity
+  FROM superstore
+  WHERE discount > 0.20 AND LOWER(region) = LOWER('Central')
 
 FILTERING:
 - Always use LOWER() for string comparisons: WHERE LOWER(state) = LOWER('California')

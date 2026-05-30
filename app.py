@@ -562,21 +562,37 @@ label[data-testid="stWidgetLabel"] p {
 .stFileUploader section[data-testid="stFileUploaderDropzone"] small {
     display: none !important;
 }
-/* Style the Browse button to fill the box */
+/* Style the Browse button to fill the box — hide default text */
 .stFileUploader section[data-testid="stFileUploaderDropzone"] button {
     background: transparent !important;
     border: none !important;
-    color: #2563eb !important;
-    font-size: 13px !important;
-    font-weight: 500 !important;
+    color: rgba(0,0,0,0) !important;
+    font-size: 0 !important;
     width: 100% !important;
     height: 42px !important;
     cursor: pointer !important;
-    letter-spacing: 0.2px !important;
     box-shadow: none !important;
 }
-.stFileUploader section[data-testid="stFileUploaderDropzone"] button:hover {
-    color: #1d4ed8 !important;
+/* Overlay label using the dropzone as anchor */
+.stFileUploader section[data-testid="stFileUploaderDropzone"] {
+    position: relative !important;
+}
+.stFileUploader section[data-testid="stFileUploaderDropzone"]::after {
+    content: "📎  Attach File";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    color: #2563eb;
+    font-size: 13px;
+    font-weight: 500;
+    font-family: 'Inter', sans-serif;
+    letter-spacing: 0.2px;
+    pointer-events: none;
+    white-space: nowrap;
+}
+.stFileUploader section[data-testid="stFileUploaderDropzone"]:hover::after {
+    color: #1d4ed8;
 }
 
 /* ── Radio buttons ── */
@@ -749,7 +765,6 @@ st.markdown(f"""
         Data<span class="dp-logo-accent">Pulse</span>
     </div>
     <div class="dp-topbar-center">
-        <span class="dp-topbar-center-badge">SUPERSTORE ANALYTICS</span>
         BUSINESS INTELLIGENCE PLATFORM
     </div>
     <div class="dp-topbar-right">
@@ -929,13 +944,55 @@ with results_col:
                 st.dataframe(df.head(10), use_container_width=True, hide_index=True)
 
             with st.spinner("Running AI analysis on uploaded file…"):
-                insight, chart = handle_file(df, name)
+                insight, chart, specific_df, specific_chart, answered, query_meta = handle_file(df, name, saved_input)
 
-            st.markdown("<div class='dp-divider'></div>", unsafe_allow_html=True)
-            st.markdown("<div class='dp-section-header'>KEY INSIGHTS</div>", unsafe_allow_html=True)
+            # ── Specific question answer (from file data directly) ─────────────
+            if answered and specific_df is not None:
+                st.markdown("<div class='dp-section-header'>QUERY RESULTS FROM FILE</div>", unsafe_allow_html=True)
+
+                requested  = query_meta.get("requested")
+                available  = query_meta.get("available", len(specific_df))
+                returned   = len(specific_df)
+
+                note = ""
+                if requested and available < requested:
+                    note = f"<span style='font-size:11px;color:#f59e0b;font-weight:600;margin-left:12px;'>⚠ Only {available} unique groups in data (top {requested} requested)</span>"
+
+                st.markdown(f"""
+                    <div class="dp-kpi-row">
+                        <div class="dp-kpi-chip dp-kpi-chip-green">
+                            <span class="dp-kpi-chip-val">{returned:,}</span>
+                            <span style="font-size:11px; font-weight:500; opacity:0.8">RECORDS RETURNED</span>
+                        </div>
+                        <div class="dp-kpi-chip dp-kpi-chip-gray">
+                            <span class="dp-kpi-chip-val">{available:,}</span>
+                            <span style="font-size:11px; font-weight:500; opacity:0.8">TOTAL GROUPS</span>
+                        </div>
+                        {note}
+                    </div>
+                """, unsafe_allow_html=True)
+
+                st.dataframe(specific_df, use_container_width=True, hide_index=True)
+
+                # Show the operation used (equivalent to SQL)
+                if len(specific_df.columns) >= 2:
+                    group_c  = specific_df.columns[0]
+                    metric_c = specific_df.columns[1]
+                    op = "AVG" if "avg" in metric_c.lower() else ("COUNT" if "count" in metric_c.lower() else "SUM")
+                    limit_clause = f"TOP {requested}" if requested else "ALL"
+                    pseudo_query = f"SELECT {group_c}, {op}(...) AS [{metric_c}]\nFROM uploaded_file\nGROUP BY {group_c}\nORDER BY [{metric_c}] DESC\n— {limit_clause} —"
+                    with st.expander("🔍  View Operation Used"):
+                        st.code(pseudo_query, language="sql")
+
+                if specific_chart:
+                    st.plotly_chart(specific_chart, use_container_width=True)
+                st.markdown("<div class='dp-divider'></div>", unsafe_allow_html=True)
+
+            # ── AI file insight ────────────────────────────────────────────────
+            st.markdown("<div class='dp-section-header'>FILE INSIGHTS</div>", unsafe_allow_html=True)
             st.markdown(insight)
 
-            if chart:
+            if chart and not specific_chart:
                 st.markdown("<div class='dp-divider'></div>", unsafe_allow_html=True)
                 st.markdown("<div class='dp-section-header'>AUTO-GENERATED CHART</div>", unsafe_allow_html=True)
                 st.plotly_chart(chart, use_container_width=True)
@@ -1224,12 +1281,19 @@ with results_col:
                     </div>
                 """, unsafe_allow_html=True)
                 # Answer label
-                st.markdown("""
-                    <div class="dp-followup-a-label">DATAPULSE</div>
-                """, unsafe_allow_html=True)
-                # Answer rendered as native markdown (handles bold, bullets, headers)
+                st.markdown('<div class="dp-followup-a-label">DATAPULSE</div>', unsafe_allow_html=True)
+                # Render: file result table OR plain markdown answer
                 with st.container():
-                    st.markdown(exchange["answer"])
+                    if exchange.get("answer") == "_FILE_RESULT_":
+                        res_df    = exchange.get("result_df")
+                        res_chart = exchange.get("result_chart")
+                        if res_df is not None:
+                            st.markdown(f"<span style='font-size:12px;color:#64748b;'>{len(res_df):,} records from uploaded file</span>", unsafe_allow_html=True)
+                            st.dataframe(res_df, use_container_width=True, hide_index=True)
+                        if res_chart:
+                            st.plotly_chart(res_chart, use_container_width=True)
+                    else:
+                        st.markdown(exchange["answer"])
                 st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
         # Fresh input always at bottom — counter key forces widget reset after each ask
@@ -1237,17 +1301,19 @@ with results_col:
             <div class="dp-followup-prompt-label">💬 &nbsp; Continue the conversation</div>
         """, unsafe_allow_html=True)
 
-        fu_input_col, fu_btn_col, fu_new_col = st.columns([5, 1, 1], gap="small")
+        fu_input_col, fu_btn_col = st.columns([5, 1], gap="small")
         with fu_input_col:
-            followup_q = st.text_input(
+            followup_q = st.text_area(
                 label="followup",
-                placeholder="e.g. 'Which sub-category is hurting profit most?' or 'Compare this to last year'",
+                placeholder="e.g. 'Which sub-category is hurting profit most?' or 'Compare this to last year'\n\nType your follow-up question here — you can write multiple lines.",
                 label_visibility="collapsed",
+                height=90,
                 key=f"fu_widget_{st.session_state.followup_counter}"
             )
         with fu_btn_col:
+            st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
             ask_followup = st.button("➤  Ask", type="primary", use_container_width=True)
-        with fu_new_col:
+            st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
             if st.button("＋  New", use_container_width=True):
                 for key in ["request_type", "last_input", "uploaded_df", "uploaded_name",
                             "typed_input", "followup_history", "followup_counter"]:
@@ -1259,36 +1325,96 @@ with results_col:
         if ask_followup and followup_q.strip():
             with st.spinner("Analysing…"):
                 try:
-                    from groq import Groq as _Groq
-                    import os as _os
-                    _client = _Groq(api_key=_os.getenv("GROQ_API_KEY"))
+                    has_uploaded_file = st.session_state.get("uploaded_df") is not None
 
-                    context_parts = [f"Original question: {st.session_state.last_input}"]
-                    if st.session_state.request_type == "WHY_QUESTION":
-                        context_parts.append("Root cause / performance analysis on the Superstore dataset.")
-                    elif st.session_state.request_type == "SQL_PULL":
-                        context_parts.append("Data pull from the Superstore dataset (sales, profit, orders).")
+                    # ── FILE MODE: answer directly from uploaded dataframe ─────
+                    if has_uploaded_file:
+                        from handlers.file_handler import _answer_from_file
+                        uploaded_df   = st.session_state.uploaded_df
+                        uploaded_name = st.session_state.get("uploaded_name", "uploaded file")
 
-                    messages = [{"role": "system", "content": (
-                        "You are a senior data analyst. Answer concisely and analytically. "
-                        "Use bullet points and **bold** key numbers. Max 200 words. "
-                        "Only cite real numbers from the Superstore dataset context provided."
-                    )}]
-                    for ex in st.session_state.followup_history[-4:]:
-                        messages.append({"role": "user",      "content": ex["question"]})
-                        messages.append({"role": "assistant", "content": ex["answer"]})
-                    messages.append({"role": "user", "content":
-                        f"Context: {' | '.join(context_parts)}\n\nQuestion: {followup_q}"
-                    })
+                        ans = _answer_from_file(uploaded_df, followup_q)
+                        spec_df, spec_chart, answered = ans[0], ans[1], ans[2]
 
-                    resp = _client.chat.completions.create(
-                        model="llama-3.1-8b-instant", messages=messages, temperature=0.3
-                    )
-                    answer = resp.choices[0].message.content.strip()
+                        if answered and spec_df is not None:
+                            # Store result df/chart in exchange for rendering
+                            st.session_state.followup_history.append({
+                                "question": followup_q,
+                                "answer":   f"_FILE_RESULT_",   # sentinel
+                                "result_df": spec_df,
+                                "result_chart": spec_chart,
+                            })
+                            st.session_state.followup_counter += 1
+                            st.rerun()
+                        else:
+                            # File loaded but question not answerable via pandas —
+                            # build compact stats context and ask LLM
+                            numeric_cols = uploaded_df.select_dtypes(include="number").columns.tolist()
+                            col_ranges = []
+                            for c in numeric_cols[:6]:
+                                try:
+                                    col_ranges.append(
+                                        f"{c}: min={uploaded_df[c].min():.2f}, max={uploaded_df[c].max():.2f}, mean={uploaded_df[c].mean():.2f}"
+                                    )
+                                except Exception:
+                                    pass
+                            file_context = (
+                                f"Uploaded file: {uploaded_name} ({uploaded_df.shape[0]:,} rows, {uploaded_df.shape[1]} cols). "
+                                f"Columns: {list(uploaded_df.columns)}. "
+                                f"Stats: {'; '.join(col_ranges)}"
+                            )
+                            from groq import Groq as _Groq
+                            from utils.config import get_groq_api_key as _get_key
+                            _client = _Groq(api_key=_get_key())
+                            messages = [{"role": "system", "content": (
+                                "You are a senior data analyst. Answer only from the uploaded file context provided. "
+                                "Do NOT reference Superstore or any other dataset. "
+                                "Use bullet points and **bold** key numbers. Max 200 words."
+                            )}]
+                            for ex in st.session_state.followup_history[-4:]:
+                                messages.append({"role": "user",      "content": ex["question"]})
+                                messages.append({"role": "assistant", "content": ex.get("answer", "")})
+                            messages.append({"role": "user", "content":
+                                f"File context: {file_context}\n\nQuestion: {followup_q}"
+                            })
+                            resp = _client.chat.completions.create(
+                                model="llama-3.1-8b-instant", messages=messages, temperature=0.3, max_tokens=400
+                            )
+                            answer = resp.choices[0].message.content.strip()
+                            st.session_state.followup_history.append({"question": followup_q, "answer": answer})
+                            st.session_state.followup_counter += 1
+                            st.rerun()
 
-                    st.session_state.followup_history.append({"question": followup_q, "answer": answer})
-                    st.session_state.followup_counter += 1  # resets input widget
-                    st.rerun()
+                    # ── SUPERSTORE MODE: use LLM with superstore context ───────
+                    else:
+                        from groq import Groq as _Groq
+                        from utils.config import get_groq_api_key as _get_key
+                        _client = _Groq(api_key=_get_key())
+
+                        context_parts = [f"Original question: {st.session_state.last_input}"]
+                        if st.session_state.request_type == "WHY_QUESTION":
+                            context_parts.append("Root cause / performance analysis on the Superstore dataset.")
+                        elif st.session_state.request_type == "SQL_PULL":
+                            context_parts.append("Data pull from the Superstore dataset (sales, profit, orders).")
+
+                        messages = [{"role": "system", "content": (
+                            "You are a senior data analyst. Answer concisely and analytically. "
+                            "Use bullet points and **bold** key numbers. Max 200 words. "
+                            "Only cite real numbers from the Superstore dataset context provided."
+                        )}]
+                        for ex in st.session_state.followup_history[-4:]:
+                            messages.append({"role": "user",      "content": ex["question"]})
+                            messages.append({"role": "assistant", "content": ex.get("answer", "")})
+                        messages.append({"role": "user", "content":
+                            f"Context: {' | '.join(context_parts)}\n\nQuestion: {followup_q}"
+                        })
+                        resp = _client.chat.completions.create(
+                            model="llama-3.1-8b-instant", messages=messages, temperature=0.3, max_tokens=400
+                        )
+                        answer = resp.choices[0].message.content.strip()
+                        st.session_state.followup_history.append({"question": followup_q, "answer": answer})
+                        st.session_state.followup_counter += 1
+                        st.rerun()
 
                 except Exception as e:
                     st.error(f"Follow-up failed: {str(e)}")

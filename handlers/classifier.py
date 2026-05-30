@@ -1,9 +1,8 @@
 import os
 from groq import Groq
-from dotenv import load_dotenv
+from utils.config import get_groq_api_key
 
-load_dotenv()
-client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+client = Groq(api_key=get_groq_api_key())
 
 def classify_request(user_input: str, has_file: bool = False) -> str:
     if has_file:
